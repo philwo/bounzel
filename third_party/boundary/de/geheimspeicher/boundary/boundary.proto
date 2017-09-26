@@ -61,7 +61,7 @@ message Action {
   int64 timeout_millis = 4;
 
   // Whether the results of this action should be cached or not.
-  bool uncachable = 5;
+  bool uncacheable = 5;
 }
 
 // The command that should be run on the remote execution platform.
@@ -103,6 +103,8 @@ message ActionResult {
     EXECUTOR_SETUP_FAIL = 3;
     EXECUTOR_RUN_FAIL = 4;
     PENDING = 5;
+    CANCELLED = 6;
+    TIMEOUT = 7;
   }
 
   Status status = 1;
@@ -120,15 +122,8 @@ message ActionResult {
   repeated File output_files = 3;
   int32 exit_code = 4;
 
-  oneof stdout {
-    bytes stdout_raw= 5;
-    Digest stdout_digest = 6;
-  }
-
-  oneof stderr {
-    bytes stderr_raw = 7;
-    Digest stderr_digest = 8;
-  }
+  Digest stdout_digest = 5;
+  Digest stderr_digest = 6;
 }
 
 message MissingInputs {

@@ -43,23 +43,16 @@ message CassyDeedResponse {
 }
 
 message CassyPinRequest {
-  message Input {
-    Digest digest = 1;
-  }
-  repeated Input inputs = 1;
-
   // An identifier for the pin. For executors, this should be their PID (written
   // to the string as an ASCII base-10 integer, e.g. "3742").
-  string id = 2;
+  string id = 1;
+  Digest digest = 2;
 }
 
 message CassyPinResponse {
-  message PinResult {
-    // The name of a local file from which the blob can be read. If missing, the
-    // blob was not pinned.
-    File local_path = 1;
-  }
-  repeated PinResult pin_result = 1;
+  // The name of a local file from which the blob can be read. If missing, the
+  // blob was not pinned.
+  File local_path = 1;
 }
 
 message CassyUnpinRequest {
