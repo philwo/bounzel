@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package de.geheimspeicher.boundary;
+import "de/geheimspeicher/boundary/digest.proto";
+
+option java_outer_classname = "FileProto";
+option java_package = "de.geheimspeicher.boundary";
+
+// A message encapsulating information about a file. Depending on the context, not all of the
+// fields will be set.
+message File {
+  // A path (may contain slashes, must not end with a slash).
+  string path = 1;
+
+  // The size of the file. Using a signed int allows to give -1 a special meaning.
+  int64 size = 2;
+
+  // The digest of the file's contents.
+  Digest content_digest = 3;
+
+  // Whether the file is executable or not.
+  bool is_executable = 4;
+}

@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package de.geheimspeicher.boundary;
+
+option java_outer_classname = "DigestProto";
+option java_package = "de.geheimspeicher.boundary";
+
+message Digest {
+  // The name of the hash function used to compute the hash. This type allows a service to
+  // upgrade its hash function in the future without breaking clients.
+  enum HashFunction {
+    // The current default choice as it is safe & simple to implement.
+    SHA256 = 0;
+    // Only supported for legacy systems - do not use for new setups.
+    MD5 = 1;
+    // Experimental: Content chunked into 1 MB pieces, each hashed with SHA256x16, then hash
+    // the hashes. Allows uploading of chunks while hashing is still in progress and then
+    // splicing them together on the server once the final hash is known. Also makes better use
+    // of modern multi-core CPUs and SIMD instructions.
+    CHUNKED_SHA256X16 = 2;
+  }
+
+  bytes hash = 1;
+  int64 size_bytes = 2;
+  HashFunction function = 3;
+}

@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package de.geheimspeicher.boundary;
+
+import "de/geheimspeicher/boundary/digest.proto";
+import "de/geheimspeicher/boundary/file.proto";
+
+option java_outer_classname = "CassyProto";
+option java_package = "de.geheimspeicher.boundary";
+
+service CassyService {
+  // Do a (possibly zero-copy) upload of an existing file on an executor node
+  // into the CAS.
+  rpc Deed(CassyDeedRequest) returns (CassyDeedResponse);
+
+  // Makes a blob available on the local filesystem until explicitly unlocked
+  // via Unpin.
+  rpc Pin(CassyPinRequest) returns (CassyPinResponse);
+
+  // Removes all pins created by earlier calls to Pin.
+  rpc Unpin(CassyUnpinRequest) returns (CassyUnpinResponse);
+
+  // Returns part or all of a blob.
+  rpc Read(CassyReadRequest) returns (stream CassyReadResponse);
+
+  // Stores a blob in Cassy.
+  rpc Store(stream CassyStoreRequest) returns (CassyStoreResponse);
+
+  // Concatenate a series of blobs to form a larger blob. This can be used to
+  // upload blobs in chunks in parallel and then assemble them on Cassy into the
+  // final blob.
+  rpc Splice(CassySpliceRequest) returns (CassySpliceResponse);
+}
+
+message CassyDeedRequest {
+  // The path to a local file.
+  File local_path = 1;
+}
+
+message CassyDeedResponse {
+  // The digest of the inserted blob.
+  Digest digest = 1;
+}
+
+message CassyPinRequest {
+  message Input {
+    Digest digest = 1;
+  }
+  repeated Input inputs = 1;
+
+  // An identifier for the pin. For executors, this should be their PID (written
+  // to the string as an ASCII base-10 integer, e.g. "3742").
+  string id = 2;
+}
+
+message CassyPinResponse {
+  message PinResult {
+    // The name of a local file from which the blob can be read. If missing, the
+    // blob was not pinned.
+    File local_path = 1;
+  }
+  repeated PinResult pin_result = 1;
+}
+
+message CassyUnpinRequest {
+  // Who the pin was on behalf of. Must match the value used in the
+  // "id" field of CassyPinRequest.
+  string id = 1;
+}
+
+message CassyUnpinResponse {
+}
+
+message CassyReadRequest {
+  // The digest of the blob that should be read from.
+  Digest digest = 1;
+
+  // Start offset in bytes.
+  int64 offset = 2;
+
+  // The maximum number of bytes to return.
+  int64 max_length = 3;
+
+  // Setting this to true will prevent the destination Cassy server from
+  // forwarding the request to other Cassy server. Typically set to true for
+  // requests from one Cassy server to another.
+  bool do_not_proxy = 4;
+}
+
+message CassyReadResponse {
+  // The digest of the blob that this read refers to.
+  Digest digest = 1;
+
+  // Some range of bytes starting at the specified offset.
+  // Note that a partial read does not indicate EOF.
+  bytes data = 2;
+
+  // Start offset in bytes.
+  int64 offset = 3;
+
+  // True when size(blob) == offset + length(this.data).
+  bool eof = 4;
+}
+
+message CassyStoreRequest {
+  // The digest computed by the client.
+  Digest digest = 1;
+
+  // The blob to be stored in its entirety.
+  bytes data = 2;
+}
+
+message CassyStoreResponse { }
+
+message CassySpliceRequest {
+  // The expected digest of the concatenated blobs.
+  Digest output = 1;
+
+  // The digests of the blobs to splice together, in order.
+  repeated Digest inputs = 2;
+}
+
+message CassySpliceResponse {
+  // The digest of the concatenated blob.
+  Digest output = 1;
+
+  // Any digests from CassySpliceRequest#inputs that were not found. If no
+  // digests were missing, the Splice was successful.
+  repeated string missing_digest = 2;
+}

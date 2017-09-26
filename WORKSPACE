@@ -96,6 +96,12 @@ new_local_repository(
     build_file = "./third_party/googleapis/BUILD",
 )
 
+new_local_repository(
+    name = "boundary",
+    path = "./third_party/boundary/",
+    build_file = "./third_party/boundary/BUILD",
+)
+
 # OpenJDK distributions used to create a version of Bazel bundled with the OpenJDK.
 http_file(
     name = "openjdk_linux",

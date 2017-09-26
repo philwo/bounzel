@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+package de.geheimspeicher.boundary;
+
+import "de/geheimspeicher/boundary/digest.proto";
+import "de/geheimspeicher/boundary/file.proto";
+
+option java_outer_classname = "BoundaryProto";
+option java_package = "de.geheimspeicher.boundary";
+
+// The Boundary API does not require explicitly checking for cache hits before trying to
+// execute the action. Simply call the Execute method and it will return a result (immediately
+// if the action was cached otherwise when the action is done executing) or a list of missing
+// inputs.
+service ActionExecution {
+  rpc Execute(ExecuteRequest) returns (stream ExecuteResponse);
+  rpc FetchOutputs(FetchRequest) returns (stream FileChunk);
+}
+
+message FetchRequest {
+  Digest action_hash = 1;
+}
+
+message FileChunk {
+  File file = 1;
+  int64 offset = 2;
+  bytes data = 3;
+  bool eof = 4;
+}
+
+// An ExecuteRequest contains information required to execute an Action. The scheduler
+// automatically dedupes actions based on their hash, so this call can be retried in case the
+// connection dies waiting for an ExecuteResponse and it will pick up the running action again.
+message ExecuteRequest {
+  // An Action to be executed.
+  Action action_message = 1;
+}
+
+// An Action message contains all the information needed to run an action on the remote
+// execution platform. To save bandwidth and to take advantage of previously uploaded
+// information, all fields bigger than primitive data types are referenced via their digest.
+message Action {
+  // List of output files. The output files need to be sorted lexicographically by their path.
+  message OutputFiles {
+    repeated string paths = 1;
+  }
+
+  // Digest of a Command message. The Command message is uploaded via Cassy.
+  Digest command_digest = 1;
+
+  // Digests of NestedSet messages that specify the input files that have to be put into the
+  // working directory of the Command to be run. The NestedSet messages are uploaded via Cassy.
+  Digest nestedset_root = 2;
+
+  // This field refers to the hash of a serialized Action.OutputFiles message. The OutputFiles
+  // message is uploaded via Cassy.
+  Digest output_files = 3;
+
+  // The timeout after which the action will be canceled. The client should preferably use
+  // the default, whose definition is left to the platform.
+  int64 timeout_millis = 4;
+
+  // Whether the results of this action should be cached or not.
+  bool uncachable = 5;
+}
+
+// The command that should be run on the remote execution platform.
+message Command {
+  message EnvironmentVariable {
+    string name = 1;
+    string value = 2;
+  }
+
+  repeated string arguments = 1;
+  repeated EnvironmentVariable environment_variables = 2;
+}
+
+// A set that contains files and can also contain other NestedSets.
+message NestedSet {
+  // References to other NestedSets contained in this one.
+  repeated Digest nestedsets = 1;
+
+  // A list of files contained in the set. Must be sorted lexicographically by their path.
+  repeated File files = 2;
+}
+
+message ExecuteResponse {
+  oneof result {
+    // Contains the results of the action execution.
+    ActionResult action_result = 1;
+
+    // Set when the client needs to provide inputs, before the requested Action can run.
+    MissingInputs missing_inputs = 2;
+  }
+}
+
+message ActionResult {
+  // This will obviously be expanded as new error cases show up during use.
+  enum Status {
+    UNKNOWN = 0;
+    OK = 1;
+    FRONTEND_FAIL = 2;
+    EXECUTOR_SETUP_FAIL = 3;
+    EXECUTOR_RUN_FAIL = 4;
+    PENDING = 5;
+  }
+
+  Status status = 1;
+
+  // When this ActionResult message was created.
+  int64 timestamp = 9;
+
+  // The name of the executor that executes / executed this action.
+  string executor_node = 10;
+
+  // Human-readable status messages. Should be empty unless the platform is running in some
+  // kind of debug mode or an error occurred.
+  repeated string status_message = 2;
+
+  repeated File output_files = 3;
+  int32 exit_code = 4;
+
+  oneof stdout {
+    bytes stdout_raw= 5;
+    Digest stdout_digest = 6;
+  }
+
+  oneof stderr {
+    bytes stderr_raw = 7;
+    Digest stderr_digest = 8;
+  }
+}
+
+message MissingInputs {
+  repeated Digest digest = 1;
+}
