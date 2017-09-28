@@ -284,6 +284,7 @@ class BoundarySpawnRunner implements SpawnRunner {
       }
     } catch (StatusRuntimeException e) {
       // Failed.
+      throw new IllegalStateException(e);
     }
 
     Preconditions.checkState(result != null);
