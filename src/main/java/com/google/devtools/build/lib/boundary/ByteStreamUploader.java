@@ -26,6 +26,7 @@ import com.google.bytestream.ByteStreamProto.WriteResponse;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
 import com.google.common.base.Throwables;
+import com.google.common.hash.HashCode;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListenableScheduledFuture;
 import com.google.common.util.concurrent.ListeningScheduledExecutorService;
@@ -417,7 +418,8 @@ final class ByteStreamUploader {
               String resourceName =
                   String.format(
                       "uploads/%s/blobs/%s/%d",
-                      UUID.randomUUID(), digest.getHash(), digest.getSizeBytes());
+                      UUID.randomUUID(), HashCode.fromBytes(digest.getHash().toByteArray()),
+                      digest.getSizeBytes());
               if (!Strings.isNullOrEmpty(instanceName)) {
                 resourceName = instanceName + "/" + resourceName;
               }

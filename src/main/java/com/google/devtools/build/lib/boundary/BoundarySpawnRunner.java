@@ -36,6 +36,7 @@ import com.google.devtools.build.lib.actions.SpawnResult.Status;
 import com.google.devtools.build.lib.actions.cache.Metadata;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
+import com.google.devtools.build.lib.exec.SpawnInputExpander;
 import com.google.devtools.build.lib.exec.SpawnRunner;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
@@ -100,13 +101,16 @@ class BoundarySpawnRunner implements SpawnRunner {
         ByteString data = vInput.getBytes();
         digest = Digests.computeDigest(data.toByteArray());
         size = data.size();
-      } else {
+      } else if (input != SpawnInputExpander.EMPTY_FILE) {
         Metadata metadata = cache.getMetadata(input);
         if (metadata == null) {
           throw new IllegalStateException();
         }
         digest = Digests.buildDigest(metadata.getDigest(), metadata.getSize());
         size = metadata.getSize();
+      } else {
+        digest = Digests.computeDigest(new byte[0]);
+        size = 0;
       }
 
       String path = entry.getKey().getPathString();
@@ -150,9 +154,9 @@ class BoundarySpawnRunner implements SpawnRunner {
     Digest commandHash = Digests.computeDigest(command.toByteArray());
     Digest outputsHash = Digests.computeDigest(outputs.toByteArray());
 
-    digestInputMap.put(inputsHash, inputs);
-    digestInputMap.put(commandHash, command);
-    digestInputMap.put(outputsHash, outputs);
+    digestInputMap.put(inputsHash, inputs.toByteArray());
+    digestInputMap.put(commandHash, command.toByteArray());
+    digestInputMap.put(outputsHash, outputs.toByteArray());
 
     builder.setNestedsetRoot(inputsHash);
     builder.setCommandDigest(commandHash);
@@ -172,7 +176,7 @@ class BoundarySpawnRunner implements SpawnRunner {
     } else if (input instanceof ActionInput) {
       return new Chunker((ActionInput) input, cache, execRoot);
     } else {
-      throw new IllegalStateException();
+      throw new IllegalStateException(input.getClass().getName());
     }
   }
 
