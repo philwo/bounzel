@@ -87,7 +87,7 @@ public final class BoundaryModule extends BlazeModule {
     converter.options = boundaryOptions;
 
     // Quit if no remote options specified.
-    if (boundaryOptions == null) {
+    if (boundaryOptions == null || boundaryOptions.boundaryFrontend == null) {
       return;
     }
 
