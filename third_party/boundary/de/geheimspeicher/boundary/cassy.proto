@@ -25,16 +25,11 @@ service CassyService {
 
   // Stores a blob in Cassy.
   rpc Store(stream CassyStoreRequest) returns (CassyStoreResponse);
-
-  // Concatenate a series of blobs to form a larger blob. This can be used to
-  // upload blobs in chunks in parallel and then assemble them on Cassy into the
-  // final blob.
-  rpc Splice(CassySpliceRequest) returns (CassySpliceResponse);
 }
 
 message CassyDeedRequest {
   // The path to a local file.
-  File local_path = 1;
+  string local_path = 1;
 }
 
 message CassyDeedResponse {
@@ -99,25 +94,13 @@ message CassyStoreRequest {
   // The digest computed by the client.
   Digest digest = 1;
 
-  // The blob to be stored in its entirety.
-  bytes data = 2;
+  int64 write_offset = 2;
+
+  bool finish_write = 3;
+
+  bytes data = 4;
 }
 
-message CassyStoreResponse { }
-
-message CassySpliceRequest {
-  // The expected digest of the concatenated blobs.
-  Digest output = 1;
-
-  // The digests of the blobs to splice together, in order.
-  repeated Digest inputs = 2;
-}
-
-message CassySpliceResponse {
-  // The digest of the concatenated blob.
-  Digest output = 1;
-
-  // Any digests from CassySpliceRequest#inputs that were not found. If no
-  // digests were missing, the Splice was successful.
-  repeated string missing_digest = 2;
+message CassyStoreResponse {
+  int64 written_bytes = 1;
 }

@@ -39,6 +39,7 @@ java_library(
         "//third_party/protobuf:protobuf_java_util",
         "@boundary//:boundary_java_grpc_proto",
         "@boundary//:boundary_java_proto",
+        "@boundary//:cassy_java_proto",
         "@boundary//:digest_java_proto",
         "@boundary//:file_java_proto",
         "@googleapis//:google_bytestream_bytestream_java_grpc",

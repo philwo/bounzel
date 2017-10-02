@@ -3,6 +3,7 @@ syntax = "proto3";
 package de.geheimspeicher.boundary;
 
 import "de/geheimspeicher/boundary/digest.proto";
+import "de/geheimspeicher/boundary/cassy.proto";
 import "de/geheimspeicher/boundary/file.proto";
 
 option java_outer_classname = "BoundaryProto";
@@ -14,7 +15,6 @@ option java_package = "de.geheimspeicher.boundary";
 // inputs.
 service ActionExecution {
   rpc Execute(ExecuteRequest) returns (stream ExecuteResponse);
-  rpc FetchOutputs(FetchRequest) returns (stream FileChunk);
 }
 
 message FetchRequest {
@@ -34,6 +34,8 @@ message FileChunk {
 message ExecuteRequest {
   // An Action to be executed.
   Action action_message = 1;
+  // Push action outputs to the client.
+  bool push_outputs = 2;
 }
 
 // An Action message contains all the information needed to run an action on the remote
@@ -91,6 +93,8 @@ message ExecuteResponse {
 
     // Set when the client needs to provide inputs, before the requested Action can run.
     MissingInputs missing_inputs = 2;
+
+    CassyReadResponse output = 3;
   }
 }
 
@@ -109,7 +113,7 @@ message ActionResult {
 
   Status status = 1;
 
-  // When this ActionResult message was created.
+  // When this ActionResult message was created (Unix timestamp in milliseconds).
   int64 timestamp = 9;
 
   // The name of the executor that executes / executed this action.

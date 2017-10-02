@@ -47,6 +47,7 @@ proto_library(
     name = "boundary_proto",
     srcs = ["de/geheimspeicher/boundary/boundary.proto"],
     deps = [
+        ":cassy_proto",
         ":digest_proto",
         ":file_proto",
     ],
