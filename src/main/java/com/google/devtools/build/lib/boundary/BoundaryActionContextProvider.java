@@ -41,7 +41,6 @@ final class BoundaryActionContextProvider extends ActionContextProvider {
   private final CommandEnvironment env;
   private final ManagedChannel channel;
 
-
   BoundaryActionContextProvider(CommandEnvironment env, ManagedChannel channel) {
     this.env = env;
     this.channel = channel;

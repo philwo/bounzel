@@ -26,7 +26,6 @@ import com.google.bytestream.ByteStreamProto.WriteResponse;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
 import com.google.common.base.Throwables;
-import com.google.common.hash.HashCode;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListenableScheduledFuture;
 import com.google.common.util.concurrent.ListeningScheduledExecutorService;
@@ -161,14 +160,11 @@ final class ByteStreamUploader {
       }
     } catch (ExecutionException e) {
       Throwable cause = e.getCause();
-      if (cause instanceof RetryException2) {
-        throw (RetryException2) cause;
-      } else {
-        throw Throwables.propagate(cause);
-      }
-    } catch (InterruptedException e) {
-      Thread.interrupted();
-      throw e;
+      Throwables.throwIfInstanceOf(cause, RetryException2.class);
+      Throwables.throwIfInstanceOf(cause, IOException.class);
+      Throwables.throwIfInstanceOf(cause, InterruptedException.class);
+      Throwables.throwIfUnchecked(cause);
+      throw new RuntimeException(cause);
     }
   }
 
@@ -416,10 +412,8 @@ final class ByteStreamUploader {
 
             private String newResourceName(Digest digest) {
               String resourceName =
-                  String.format(
-                      "uploads/%s/blobs/%s/%d",
-                      UUID.randomUUID(), HashCode.fromBytes(digest.getHash().toByteArray()),
-                      digest.getSizeBytes());
+                  String.format("uploads/%s/%s",
+                      UUID.randomUUID(), BoundarySpawnRunner.resourceName(digest));
               if (!Strings.isNullOrEmpty(instanceName)) {
                 resourceName = instanceName + "/" + resourceName;
               }

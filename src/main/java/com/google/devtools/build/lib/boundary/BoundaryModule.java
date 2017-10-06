@@ -57,10 +57,9 @@ public final class BoundaryModule extends BlazeModule {
       try {
         Digest digest = Digests.computeDigest(path);
         return String.format(
-            "bytestream://%s/blobs/%s/%d",
+            "bytestream://%s/%s",
             server,
-            digest.getHash(),
-            digest.getSizeBytes());
+            BoundarySpawnRunner.resourceName(digest));
 
       } catch (IOException e) {
         // TODO(ulfjack): Don't fail silently!

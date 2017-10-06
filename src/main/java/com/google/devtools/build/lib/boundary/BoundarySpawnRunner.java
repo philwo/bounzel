@@ -14,26 +14,17 @@
 
 package com.google.devtools.build.lib.boundary;
 
-import com.google.bytestream.ByteStreamGrpc;
-import com.google.bytestream.ByteStreamGrpc.ByteStreamStub;
-import com.google.bytestream.ByteStreamProto.ReadRequest;
-import com.google.bytestream.ByteStreamProto.ReadResponse;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Multimap;
 import com.google.common.hash.HashCode;
-import com.google.common.hash.HashFunction;
 import com.google.common.hash.Hashing;
 import com.google.common.hash.HashingOutputStream;
 import com.google.common.io.ByteStreams;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningScheduledExecutorService;
-import com.google.common.util.concurrent.SettableFuture;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputFileCache;
-import com.google.devtools.build.lib.actions.EnvironmentalExecException;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
@@ -44,6 +35,7 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.exec.SpawnInputExpander;
 import com.google.devtools.build.lib.exec.SpawnRunner;
 import com.google.devtools.build.lib.util.io.FileOutErr;
+import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -63,9 +55,7 @@ import de.geheimspeicher.boundary.CassyProto.CassyReadResponse;
 import de.geheimspeicher.boundary.DigestProto.Digest;
 import de.geheimspeicher.boundary.FileProto.File;
 import io.grpc.Channel;
-import io.grpc.stub.StreamObserver;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -73,8 +63,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.SortedSet;
 import java.util.TreeSet;
-import java.util.concurrent.ExecutionException;
 
 /** A client for the remote execution service. */
 @ThreadSafe
@@ -112,7 +102,7 @@ class BoundarySpawnRunner implements SpawnRunner {
         if (metadata == null) {
           throw new IllegalStateException();
         }
-        digest = Digests.buildDigest(metadata.getDigest(), metadata.getSize());
+        digest = Digests.buildDigest(FileSystem.getDigestFunction(), metadata.getDigest(), metadata.getSize());
         size = metadata.getSize();
       } else {
         digest = Digests.computeDigest(new byte[0]);
@@ -122,9 +112,9 @@ class BoundarySpawnRunner implements SpawnRunner {
       String path = entry.getKey().getPathString();
       File file = File.newBuilder()
           .setPath(path)
+          .setSize(size)
           .setContentDigest(digest)
           .setIsExecutable(true)
-          .setSize(size)
           .build();
       builder.addFiles(file);
 
@@ -136,8 +126,8 @@ class BoundarySpawnRunner implements SpawnRunner {
   private Command buildCommand(List<String> arguments, ImmutableMap<String, String> env) {
     Command.Builder command = Command.newBuilder();
     command.addAllArguments(arguments);
-    // Sorting the environment pairs by variable name.
-    TreeSet<String> variables = new TreeSet<>(env.keySet());
+    // Sort the environment pairs by variable name.
+    SortedSet<String> variables = new TreeSet<>(env.keySet());
     for (String var : variables) {
       command.addEnvironmentVariablesBuilder().setName(var).setValue(env.get(var));
     }
@@ -156,13 +146,17 @@ class BoundarySpawnRunner implements SpawnRunner {
       Map<Digest, Object> digestInputMap) {
     Action.Builder builder = Action.newBuilder();
 
-    Digest inputsHash = Digests.computeDigest(inputs.toByteArray());
-    Digest commandHash = Digests.computeDigest(command.toByteArray());
-    Digest outputsHash = Digests.computeDigest(outputs.toByteArray());
+    byte[] serializedInputs = inputs.toByteArray();
+    byte[] serializedCommand = command.toByteArray();
+    byte[] serializedOutputs = outputs.toByteArray();
 
-    digestInputMap.put(inputsHash, inputs.toByteArray());
-    digestInputMap.put(commandHash, command.toByteArray());
-    digestInputMap.put(outputsHash, outputs.toByteArray());
+    Digest inputsHash = Digests.computeDigest(serializedInputs);
+    Digest commandHash = Digests.computeDigest(serializedCommand);
+    Digest outputsHash = Digests.computeDigest(serializedOutputs);
+
+    digestInputMap.put(inputsHash, serializedInputs);
+    digestInputMap.put(commandHash, serializedCommand);
+    digestInputMap.put(outputsHash, serializedOutputs);
 
     builder.setNestedsetRoot(inputsHash);
     builder.setCommandDigest(commandHash);
@@ -171,7 +165,7 @@ class BoundarySpawnRunner implements SpawnRunner {
     return builder.build();
   }
 
-  private Chunker hashFuncFromDigest(Digest digest, Map<Digest, Object> digestInputMap,
+  private Chunker chunkerFromDigest(Digest digest, Map<Digest, Object> digestInputMap,
       ActionInputFileCache cache) throws IOException {
     Object input = digestInputMap.get(digest);
 
@@ -186,72 +180,74 @@ class BoundarySpawnRunner implements SpawnRunner {
     }
   }
 
-  private String resourceName(Digest digest) {
-    String hash = HashCode.fromBytes(digest.getHash().toByteArray()).toString();
-    return "blobs/" + hash + "/" + digest.getSizeBytes();
+  static String resourceName(Digest digest) {
+    HashCode hash = HashCode.fromBytes(digest.getHash().toByteArray());
+    return String.format("blobs/%s/%s/%d", digest.getFunction().name(), hash, digest.getSizeBytes());
   }
 
-  private void downloadOutputs(ActionResult result, FileOutErr outErr)
-      throws IOException, ExecException, InterruptedException {
-    ByteStreamStub byteStreamService = ByteStreamGrpc.newStub(channel);
+  // private void downloadOutputs(ActionResult result, FileOutErr outErr)
+  //     throws IOException, ExecException, InterruptedException {
+  //   ByteStreamStub byteStreamService = ByteStreamGrpc.newStub(channel);
+  //
+  //   List<ListenableFuture<Void>> downloads = new ArrayList<>();
+  //   for (File output : result.getOutputFilesList()) {
+  //     Path path = execRoot.getRelative(output.getPath());
+  //     FileSystemUtils.createDirectoryAndParents(path.getParentDirectory());
+  //     Digest digest = output.getContentDigest();
+  //     downloads.add(download(byteStreamService, digest, path.getOutputStream()));
+  //   }
+  //
+  //   downloads.add(download(byteStreamService, result.getStdoutDigest(), outErr.getOutputStream()));
+  //   downloads.add(download(byteStreamService, result.getStderrDigest(), outErr.getErrorStream()));
+  //
+  //   try {
+  //     Futures.allAsList(downloads).get();
+  //   } catch (ExecutionException e) {
+  //     throw new EnvironmentalExecException("Download of outputs failed", e.getCause());
+  //   }
+  // }
 
-    List<ListenableFuture<Void>> downloads = new ArrayList<>();
-    for (File output : result.getOutputFilesList()) {
-      Path path = execRoot.getRelative(output.getPath());
-      FileSystemUtils.createDirectoryAndParents(path.getParentDirectory());
-      Digest digest = output.getContentDigest();
-      downloads.add(download(byteStreamService, digest, path.getOutputStream()));
-    }
-
-    downloads.add(download(byteStreamService, result.getStdoutDigest(), outErr.getOutputStream()));
-    downloads.add(download(byteStreamService, result.getStderrDigest(), outErr.getErrorStream()));
-
-    try {
-      Futures.allAsList(downloads).get();
-    } catch (ExecutionException e) {
-      throw new EnvironmentalExecException("Download of outputs failed", e.getCause());
-    }
-  }
-
-  private ListenableFuture<Void> download(ByteStreamStub byteStreamService,
-      Digest digest, OutputStream out) {
-    SettableFuture<Void> f = SettableFuture.create();
-    ReadRequest request = ReadRequest.newBuilder().setResourceName(resourceName(digest)).build();
-    byteStreamService.read(request, new StreamObserver<ReadResponse>() {
-      @Override
-      public void onNext(ReadResponse readResponse) {
-        try {
-          readResponse.getData().writeTo(out);
-        } catch (IOException e) {
-          onError(e);
-        }
-      }
-
-      @Override
-      public void onError(Throwable throwable) {
-        if (out != null) {
-          try {
-            out.close();
-          } catch (IOException e) {
-            // Intentionally left empty.
-          } finally {
-            f.setException(throwable);
-          }
-        }
-      }
-
-      @Override
-      public void onCompleted() {
-        try {
-          out.close();
-          f.set(null);
-        } catch (IOException e) {
-          f.setException(e);
-        }
-      }
-    });
-    return f;
-  }
+  // private ListenableFuture<Void> download(ByteStreamStub byteStreamService,
+  //     Digest digest, OutputStream out) {
+  //   SettableFuture<Void> f = SettableFuture.create();
+  //   ReadRequest request = ReadRequest.newBuilder().setResourceName(resourceName(digest)).build();
+  //   byteStreamService.read(request, new StreamObserver<ReadResponse>() {
+  //     @Override
+  //     public void onNext(ReadResponse readResponse) {
+  //       try {
+  //         readResponse.getData().writeTo(out);
+  //       } catch (IOException e) {
+  //         onError(e);
+  //       }
+  //     }
+  //
+  //     @Override
+  //     public void onError(Throwable throwable) {
+  //       try {
+  //         if (out != null) {
+  //           out.close();
+  //         }
+  //       } catch (IOException e) {
+  //         // Intentionally left empty.
+  //       } finally {
+  //         f.setException(throwable);
+  //       }
+  //     }
+  //
+  //     @Override
+  //     public void onCompleted() {
+  //       try {
+  //         if (out != null) {
+  //           out.close();
+  //         }
+  //         f.set(null);
+  //       } catch (IOException e) {
+  //         f.setException(e);
+  //       }
+  //     }
+  //   });
+  //   return f;
+  // }
 
   enum ResponseState {
     MISSING_INPUTS,
@@ -315,44 +311,40 @@ class BoundarySpawnRunner implements SpawnRunner {
 
     Digest stdoutDigest = result.getStdoutDigest();
     HashingOutputStream stdout =
-        new HashingOutputStream(hashFuncFromDigest(stdoutDigest), outErr.getOutputStream());
+        new HashingOutputStream(Digests.hashFunctionFromDigest(stdoutDigest), outErr.getOutputStream());
     outFiles.put(result.getStdoutDigest(), new DownloadState(stdout, null));
+
     Digest stderrDigest = result.getStderrDigest();
     HashingOutputStream stderr =
-        new HashingOutputStream(hashFuncFromDigest(stderrDigest), outErr.getErrorStream());
+        new HashingOutputStream(Digests.hashFunctionFromDigest(stderrDigest), outErr.getErrorStream());
     outFiles.put(result.getStderrDigest(), new DownloadState(stderr, null));
-    return outFiles;
-  }
 
-  private HashFunction hashFuncFromDigest(Digest digest) {
-    if (digest.getFunction().equals(Digest.HashFunction.MD5)) {
-      return Hashing.md5();
-    } else if (digest.getFunction().equals(Digest.HashFunction.SHA256)) {
-      return Hashing.sha256();
-    } else {
-      throw new IllegalArgumentException("Unsupported hash function: " + digest.getFunction().name());
-    }
+    return outFiles;
   }
 
   private DownloadState getDownloadState(Multimap<Digest, DownloadState> outFilesMap,
       Digest fileDigest, long offset) throws IOException {
     Collection<DownloadState> outFiles = outFilesMap.get(fileDigest);
+
     if (outFiles.isEmpty()) {
       throw new IOException("Unknown output digest: " + fileDigest);
     }
+
     for (DownloadState outFile : outFiles) {
       if (outFile.out == DownloadState.NOT_INITIALIZED) {
         Path path = execRoot.getRelative(outFile.file.getPath());
         if (!path.getParentDirectory().exists()) {
           FileSystemUtils.createDirectoryAndParents(path.getParentDirectory());
         }
-        outFile.out = new HashingOutputStream(hashFuncFromDigest(fileDigest),
+        outFile.out = new HashingOutputStream(Digests.hashFunctionFromDigest(fileDigest),
             path.getOutputStream());
       }
+
       if (outFile.offset == offset) {
         return outFile;
       }
     }
+
     throw new IOException("Unknown output digest: " + fileDigest);
   }
 
@@ -391,7 +383,7 @@ class BoundarySpawnRunner implements SpawnRunner {
           MissingInputs missingInputs = response.getMissingInputs();
           List<Chunker> uploads = new ArrayList<>();
           for (Digest missing : missingInputs.getDigestList()) {
-            uploads.add(hashFuncFromDigest(missing, digestInputMap, policy.getActionInputFileCache()));
+            uploads.add(chunkerFromDigest(missing, digestInputMap, policy.getActionInputFileCache()));
           }
           uploader.uploadBlobs(uploads);
           break;
