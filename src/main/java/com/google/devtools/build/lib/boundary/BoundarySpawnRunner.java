@@ -73,16 +73,15 @@ class BoundarySpawnRunner implements SpawnRunner {
   private final Path execRoot;
   private final SpawnRunner fallbackRunner;
   private final Channel channel;
-  private final Retrier retrier;
-  private final ListeningScheduledExecutorService retryScheduler;
+  private final ByteStreamUploader uploader;
 
   BoundarySpawnRunner(Path execRoot, Channel channel, SpawnRunner fallbackRunner, Retrier retrier,
       ListeningScheduledExecutorService retryScheduler) {
     this.execRoot = execRoot;
     this.channel = channel;
     this.fallbackRunner = fallbackRunner;
-    this.retrier = retrier;
-    this.retryScheduler = retryScheduler;
+    this.uploader = new ByteStreamUploader(null, channel, null, Long.MAX_VALUE,
+        retrier, retryScheduler);
   }
 
   private NestedSet inputFiles(Map<PathFragment, ActionInput> inputs,
@@ -366,8 +365,6 @@ class BoundarySpawnRunner implements SpawnRunner {
     Action action = buildAction(inputs, command, outputs, digestInputMap);
 
     ActionExecutionBlockingStub executionService = ActionExecutionGrpc.newBlockingStub(channel);
-    ByteStreamUploader uploader = new ByteStreamUploader(null, channel, null, Long.MAX_VALUE,
-        retrier, retryScheduler);
 
     ExecuteRequest executeReq = ExecuteRequest.newBuilder().setActionMessage(action).setPushOutputs(true).build();
     Iterator<ExecuteResponse> iter = executionService.execute(executeReq);
