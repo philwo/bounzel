@@ -25,12 +25,17 @@ import com.google.common.io.ByteStreams;
 import com.google.common.util.concurrent.ListeningScheduledExecutorService;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputFileCache;
+import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
 import com.google.devtools.build.lib.actions.cache.Metadata;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
+import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
+import com.google.devtools.build.lib.collect.nestedset.NestedSetView;
+import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.exec.SpawnInputExpander;
 import com.google.devtools.build.lib.exec.SpawnRunner;
@@ -40,6 +45,7 @@ import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.Message;
 import de.geheimspeicher.boundary.ActionExecutionGrpc;
 import de.geheimspeicher.boundary.ActionExecutionGrpc.ActionExecutionBlockingStub;
 import de.geheimspeicher.boundary.BoundaryProto.Action;
@@ -56,6 +62,7 @@ import de.geheimspeicher.boundary.DigestProto.Digest;
 import de.geheimspeicher.boundary.FileProto.File;
 import io.grpc.Channel;
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -63,6 +70,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Queue;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
@@ -74,6 +82,7 @@ class BoundarySpawnRunner implements SpawnRunner {
   private final SpawnRunner fallbackRunner;
   private final Channel channel;
   private final ByteStreamUploader uploader;
+  private final SpawnInputExpander spawnInputExpander = new SpawnInputExpander(false);
 
   BoundarySpawnRunner(Path execRoot, Channel channel, SpawnRunner fallbackRunner, Retrier retrier,
       ListeningScheduledExecutorService retryScheduler) {
@@ -84,42 +93,105 @@ class BoundarySpawnRunner implements SpawnRunner {
         retrier, retryScheduler);
   }
 
-  private NestedSet inputFiles(Map<PathFragment, ActionInput> inputs,
-      ActionInputFileCache cache, Map<Digest, Object> digestInputMap) throws IOException {
-    NestedSet.Builder builder = NestedSet.newBuilder();
-    for (Entry<PathFragment, ActionInput> entry : inputs.entrySet()) {
-      final Digest digest;
-      final long size;
-      ActionInput input = entry.getValue();
-      if (input instanceof VirtualActionInput) {
-        VirtualActionInput vInput = (VirtualActionInput) input;
-        ByteString data = vInput.getBytes();
-        digest = Digests.computeDigest(data.toByteArray());
-        size = data.size();
-      } else if (input != SpawnInputExpander.EMPTY_FILE) {
-        Metadata metadata = cache.getMetadata(input);
-        if (metadata == null) {
-          throw new IllegalStateException();
+  private NestedSet inputFiles(
+      Spawn spawn,
+      ArtifactExpander artifactExpander,
+      ActionInputFileCache cache,
+      Map<Digest, Object> digestInputMap) throws IOException {
+
+    NestedSet.Builder rootBuilder = NestedSet.newBuilder();
+
+    // Add all regular inputs.
+    Queue<NestedSetView<? extends ActionInput>> transitiveInputs = new ArrayDeque<>();
+    transitiveInputs.add(new NestedSetView<>(getSpawnInputsAsNestedSet(spawn)));
+    while (!transitiveInputs.isEmpty()) {
+      NestedSetView<? extends ActionInput> inputs = transitiveInputs.remove();
+      NestedSet.Builder inputListBuilder = NestedSet.newBuilder();
+      Queue<ActionInput> directInputs = new ArrayDeque<>(inputs.directs());
+
+      while (!directInputs.isEmpty()) {
+        ActionInput directInput = directInputs.remove();
+        if (directInput instanceof Artifact) {
+          Artifact directInputArtifact = (Artifact) directInput;
+          if (directInputArtifact.isMiddlemanArtifact() || directInputArtifact.isTreeArtifact()) {
+            ArrayList<Artifact> expandedArtifacts = new ArrayList<>();
+            artifactExpander.expand(directInputArtifact, expandedArtifacts);
+            if (!expandedArtifacts.isEmpty()) {
+              transitiveInputs.add(new NestedSetView<>(
+                  new NestedSetBuilder<Artifact>(Order.STABLE_ORDER).addAll(expandedArtifacts)
+                      .build()));
+            }
+            continue;
+          }
         }
-        digest = Digests.buildDigest(FileSystem.getDigestFunction(), metadata.getDigest(), metadata.getSize());
-        size = metadata.getSize();
-      } else {
-        digest = Digests.computeDigest(new byte[0]);
-        size = 0;
+        Preconditions.checkArgument(!directInput.getExecPath().isAbsolute(), directInput.getExecPath());
+        File file = actionInputToFileProto(directInput, directInput.getExecPath(), cache);
+        inputListBuilder.addFiles(file);
+        digestInputMap.put(file.getContentDigest(), directInput);
       }
 
-      String path = entry.getKey().getPathString();
-      File file = File.newBuilder()
-          .setPath(path)
-          .setSize(size)
-          .setContentDigest(digest)
-          .setIsExecutable(true)
-          .build();
-      builder.addFiles(file);
+      if (inputListBuilder.getFilesCount() > 0) {
+        rootBuilder.addNestedsets(hashAndMemorize(inputListBuilder.build(), digestInputMap));
+      }
 
-      digestInputMap.put(digest, input);
+      transitiveInputs.addAll(inputs.transitives());
     }
-    return builder.build();
+
+    // Add all runfiles to inputs.
+    Map<PathFragment, ActionInput> inputMap = new HashMap<>();
+    spawnInputExpander.addRunfilesToInputs(inputMap, spawn.getRunfilesSupplier(), cache);
+
+    // Add all inputs from fileset manifests.
+    for (Artifact manifest : spawn.getFilesetManifests()) {
+      spawnInputExpander.parseFilesetManifest(inputMap, manifest, "");
+    }
+
+    for (Entry<PathFragment, ActionInput> entry : inputMap.entrySet()) {
+      ActionInput input = entry.getValue();
+      File file = actionInputToFileProto(input, entry.getKey(), cache);
+      rootBuilder.addFiles(file);
+      digestInputMap.put(file.getContentDigest(), input);
+    }
+
+    return rootBuilder.build();
+  }
+
+  private com.google.devtools.build.lib.collect.nestedset.NestedSet<? extends ActionInput> getSpawnInputsAsNestedSet(Spawn spawn) {
+    Iterable<? extends ActionInput> spawnInputs = spawn.getInputFiles();
+    if (spawnInputs instanceof com.google.devtools.build.lib.collect.nestedset.NestedSet) {
+      return (com.google.devtools.build.lib.collect.nestedset.NestedSet<ActionInput>) spawnInputs;
+    } else {
+      return new NestedSetBuilder<ActionInput>(Order.STABLE_ORDER).addAll(spawnInputs).build();
+    }
+  }
+
+  File actionInputToFileProto(ActionInput input, PathFragment targetLocation, ActionInputFileCache cache)
+      throws IOException {
+    final Digest digest;
+    final long size;
+    if (input instanceof VirtualActionInput) {
+      VirtualActionInput vInput = (VirtualActionInput) input;
+      ByteString data = vInput.getBytes();
+      digest = Digests.computeDigest(data.toByteArray());
+      size = data.size();
+    } else if (input == SpawnInputExpander.EMPTY_FILE) {
+      digest = Digests.computeDigest(new byte[0]);
+      size = 0;
+    } else {
+      Metadata metadata = cache.getMetadata(input);
+      if (metadata == null) {
+        throw new IllegalStateException();
+      }
+      digest = Digests.buildDigest(FileSystem.getDigestFunction(), metadata.getDigest(), metadata.getSize());
+      size = metadata.getSize();
+    }
+
+    return File.newBuilder()
+        .setPath(targetLocation.getPathString())
+        .setSize(size)
+        .setContentDigest(digest)
+        .setIsExecutable(true)
+        .build();
   }
 
   private Command buildCommand(List<String> arguments, ImmutableMap<String, String> env) {
@@ -145,23 +217,22 @@ class BoundarySpawnRunner implements SpawnRunner {
       Map<Digest, Object> digestInputMap) {
     Action.Builder builder = Action.newBuilder();
 
-    byte[] serializedInputs = inputs.toByteArray();
-    byte[] serializedCommand = command.toByteArray();
-    byte[] serializedOutputs = outputs.toByteArray();
-
-    Digest inputsHash = Digests.computeDigest(serializedInputs);
-    Digest commandHash = Digests.computeDigest(serializedCommand);
-    Digest outputsHash = Digests.computeDigest(serializedOutputs);
-
-    digestInputMap.put(inputsHash, serializedInputs);
-    digestInputMap.put(commandHash, serializedCommand);
-    digestInputMap.put(outputsHash, serializedOutputs);
+    Digest inputsHash = hashAndMemorize(inputs, digestInputMap);
+    Digest commandHash = hashAndMemorize(command, digestInputMap);
+    Digest outputsHash = hashAndMemorize(outputs, digestInputMap);
 
     builder.setNestedsetRoot(inputsHash);
     builder.setCommandDigest(commandHash);
     builder.setOutputFiles(outputsHash);
 
     return builder.build();
+  }
+
+  private Digest hashAndMemorize(Message message, Map<Digest, Object> digestInputMap) {
+    byte[] serializedMessage = message.toByteArray();
+    Digest messageHash = Digests.computeDigest(serializedMessage);
+    digestInputMap.put(messageHash, serializedMessage);
+    return messageHash;
   }
 
   private Chunker chunkerFromDigest(Digest digest, Map<Digest, Object> digestInputMap,
@@ -358,7 +429,11 @@ class BoundarySpawnRunner implements SpawnRunner {
     Map<Digest, Object> digestInputMap = new HashMap<>();
 
     NestedSet inputs =
-        inputFiles(policy.getInputMapping(), policy.getActionInputFileCache(), digestInputMap);
+        inputFiles(
+            spawn,
+            policy.getArtifactExpander(),
+            policy.getActionInputFileCache(),
+            digestInputMap);
     Command command = buildCommand(spawn.getArguments(), spawn.getEnvironment());
     OutputFiles outputs = buildOutputFiles(spawn.getOutputFiles());
 

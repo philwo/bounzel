@@ -74,7 +74,7 @@ public class SpawnInputExpander {
 
   /** Adds runfiles inputs from runfilesSupplier to inputMappings. */
   @VisibleForTesting
-  void addRunfilesToInputs(
+  public void addRunfilesToInputs(
       Map<PathFragment, ActionInput> inputMap,
       RunfilesSupplier runfilesSupplier,
       ActionInputFileCache actionFileCache) throws IOException {
@@ -105,7 +105,7 @@ public class SpawnInputExpander {
    * appropriate. Lines referring to directories are recursed.
    */
   @VisibleForTesting
-  void parseFilesetManifest(
+  public void parseFilesetManifest(
       Map<PathFragment, ActionInput> inputMappings, Artifact manifest, String workspaceName)
           throws IOException {
     FilesetManifest filesetManifest =
