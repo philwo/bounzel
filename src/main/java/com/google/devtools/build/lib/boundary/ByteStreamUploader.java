@@ -13,9 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.boundary;
 
-import static com.google.devtools.build.lib.util.Preconditions.checkArgument;
-import static com.google.devtools.build.lib.util.Preconditions.checkNotNull;
-import static com.google.devtools.build.lib.util.Preconditions.checkState;
 import static java.util.Collections.singletonList;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -24,6 +21,7 @@ import com.google.bytestream.ByteStreamGrpc;
 import com.google.bytestream.ByteStreamProto.WriteRequest;
 import com.google.bytestream.ByteStreamProto.WriteResponse;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -102,7 +100,7 @@ final class ByteStreamUploader {
       long callTimeoutSecs,
       Retrier retrier,
       ListeningScheduledExecutorService retryService) {
-    checkArgument(callTimeoutSecs > 0, "callTimeoutSecs must be gt 0.");
+    Preconditions.checkArgument(callTimeoutSecs > 0, "callTimeoutSecs must be gt 0.");
 
     this.instanceName = instanceName;
     this.channel = channel;
@@ -193,10 +191,10 @@ final class ByteStreamUploader {
   @VisibleForTesting
   ListenableFuture<Void> uploadBlobAsync(Chunker chunker)
       throws IOException {
-    Digest digest = checkNotNull(chunker.digest());
+    Digest digest = Preconditions.checkNotNull(chunker.digest());
 
     synchronized (lock) {
-      checkState(!isShutdown, "Must not call uploadBlobs after shutdown.");
+      Preconditions.checkState(!isShutdown, "Must not call uploadBlobs after shutdown.");
 
       ListenableFuture<Void> uploadResult = uploadsInProgress.get(digest);
       if (uploadResult == null) {

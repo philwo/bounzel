@@ -31,6 +31,7 @@ import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
+import com.google.devtools.build.lib.actions.Spawns;
 import com.google.devtools.build.lib.actions.cache.Metadata;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
@@ -40,7 +41,7 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.exec.SpawnInputExpander;
 import com.google.devtools.build.lib.exec.SpawnRunner;
 import com.google.devtools.build.lib.util.io.FileOutErr;
-import com.google.devtools.build.lib.vfs.FileSystem;
+import com.google.devtools.build.lib.vfs.FileSystem.HashFunction;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -83,10 +84,12 @@ class BoundarySpawnRunner implements SpawnRunner {
   private final Channel channel;
   private final ByteStreamUploader uploader;
   private final SpawnInputExpander spawnInputExpander = new SpawnInputExpander(false);
+  private final HashFunction hashFunction;
 
   BoundarySpawnRunner(Path execRoot, Channel channel, SpawnRunner fallbackRunner, Retrier retrier,
       ListeningScheduledExecutorService retryScheduler) {
     this.execRoot = execRoot;
+    this.hashFunction = execRoot.getFileSystem().getDigestFunction();
     this.channel = channel;
     this.fallbackRunner = fallbackRunner;
     this.uploader = new ByteStreamUploader(null, channel, null, Long.MAX_VALUE,
@@ -172,17 +175,17 @@ class BoundarySpawnRunner implements SpawnRunner {
     if (input instanceof VirtualActionInput) {
       VirtualActionInput vInput = (VirtualActionInput) input;
       ByteString data = vInput.getBytes();
-      digest = Digests.computeDigest(data.toByteArray());
+      digest = Digests.computeDigest(hashFunction, data.toByteArray());
       size = data.size();
     } else if (input == SpawnInputExpander.EMPTY_FILE) {
-      digest = Digests.computeDigest(new byte[0]);
+      digest = Digests.computeDigest(hashFunction, new byte[0]);
       size = 0;
     } else {
       Metadata metadata = cache.getMetadata(input);
       if (metadata == null) {
         throw new IllegalStateException();
       }
-      digest = Digests.buildDigest(FileSystem.getDigestFunction(), metadata.getDigest(), metadata.getSize());
+      digest = Digests.buildDigest(hashFunction, metadata.getDigest(), metadata.getSize());
       size = metadata.getSize();
     }
 
@@ -230,7 +233,7 @@ class BoundarySpawnRunner implements SpawnRunner {
 
   private Digest hashAndMemorize(Message message, Map<Digest, Object> digestInputMap) {
     byte[] serializedMessage = message.toByteArray();
-    Digest messageHash = Digests.computeDigest(serializedMessage);
+    Digest messageHash = Digests.computeDigest(hashFunction, serializedMessage);
     digestInputMap.put(messageHash, serializedMessage);
     return messageHash;
   }
@@ -240,9 +243,9 @@ class BoundarySpawnRunner implements SpawnRunner {
     Object input = digestInputMap.get(digest);
 
     if (input instanceof byte[]) {
-      return new Chunker((byte[]) input);
+      return new Chunker(Digests.digestHashFunctionToHashFunction(digest.getFunction()), (byte[]) input);
     } else if (input instanceof VirtualActionInput) {
-      return new Chunker(((VirtualActionInput) input).getBytes().toByteArray());
+      return new Chunker(Digests.digestHashFunctionToHashFunction(digest.getFunction()), ((VirtualActionInput) input).getBytes().toByteArray());
     } else if (input instanceof ActionInput) {
       return new Chunker((ActionInput) input, cache, execRoot);
     } else {
@@ -421,7 +424,7 @@ class BoundarySpawnRunner implements SpawnRunner {
   @Override
   public SpawnResult exec(Spawn spawn, SpawnExecutionPolicy policy)
       throws ExecException, InterruptedException, IOException {
-    if (!spawn.isRemotable()) {
+    if (!Spawns.mayBeExecutedRemotely(spawn)) {
       return fallbackRunner.exec(spawn, policy);
     }
     policy.report(ProgressStatus.EXECUTING, "boundary");

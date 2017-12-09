@@ -15,13 +15,15 @@
 package com.google.devtools.build.lib.boundary;
 
 import static com.google.common.base.Preconditions.checkNotNull;
-import static com.google.devtools.build.lib.util.Preconditions.checkState;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.io.ByteStreams;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.MetadataProvider;
+import com.google.devtools.build.lib.vfs.FileSystem.HashFunction;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.protobuf.ByteString;
 import de.geheimspeicher.boundary.DigestProto.Digest;
@@ -29,6 +31,7 @@ import java.io.ByteArrayInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -43,8 +46,10 @@ import java.util.function.Supplier;
  */
 public final class Chunker {
 
-  private static final Chunk EMPTY_CHUNK =
-      new Chunk(Digests.computeDigest(new byte[0]), ByteString.EMPTY, 0);
+  private static final Map<Digest.HashFunction, Chunk> EMPTY_CHUNK = ImmutableMap.<Digest.HashFunction, Chunk>builder()
+      .put(Digest.HashFunction.MD5, new Chunk(Digests.computeDigest(HashFunction.MD5, new byte[0]), ByteString.EMPTY, 0))
+      .put(Digest.HashFunction.SHA256, new Chunk(Digests.computeDigest(HashFunction.SHA256, new byte[0]), ByteString.EMPTY, 0))
+      .build();
 
   private static int defaultChunkSize = 1024 * 16;
 
@@ -115,12 +120,12 @@ public final class Chunker {
   // lazily on the first call to next(), as opposed to opening it in the constructor or on reset().
   private boolean initialized;
 
-  public Chunker(byte[] data) throws IOException {
-    this(data, getDefaultChunkSize());
+  public Chunker(HashFunction hashFunction, byte[] data) throws IOException {
+    this(hashFunction, data, getDefaultChunkSize());
   }
 
-  public Chunker(byte[] data, int chunkSize) throws IOException {
-    this(() -> new ByteArrayInputStream(data), Digests.computeDigest(data), chunkSize);
+  public Chunker(HashFunction hashFunction, byte[] data, int chunkSize) throws IOException {
+    this(() -> new ByteArrayInputStream(data), Digests.computeDigest(hashFunction, data), chunkSize);
   }
 
   public Chunker(Path file) throws IOException {
@@ -134,7 +139,7 @@ public final class Chunker {
       } catch (IOException e) {
         throw new RuntimeException(e);
       }
-    }, Digests.computeDigest(file), chunkSize);
+    }, Digests.computeDigest(file.getFileSystem().getDigestFunction(), file), chunkSize);
   }
 
   public Chunker(ActionInput actionInput, MetadataProvider inputCache, Path execRoot) throws
@@ -151,7 +156,7 @@ public final class Chunker {
       } catch (IOException e) {
         throw new RuntimeException(e);
       }
-    }, Digests.getDigestFromInputCache(actionInput, inputCache), chunkSize);
+    }, Digests.getDigestFromInputCache(execRoot.getFileSystem().getDigestFunction(), actionInput, inputCache), chunkSize);
   }
 
   @VisibleForTesting
@@ -206,7 +211,7 @@ public final class Chunker {
 
     if (digest.getSizeBytes() == 0) {
       data = null;
-      return EMPTY_CHUNK;
+      return EMPTY_CHUNK.get(digest.getFunction());
     }
 
     // The cast to int is safe, because the return value is capped at chunkSize.
@@ -253,9 +258,9 @@ public final class Chunker {
     if (initialized) {
       return;
     }
-    checkState(data == null);
-    checkState(offset == 0);
-    checkState(chunkCache == null);
+    Preconditions.checkState(data == null);
+    Preconditions.checkState(offset == 0);
+    Preconditions.checkState(chunkCache == null);
     try {
       data = dataSupplier.get();
     } catch (RuntimeException e) {

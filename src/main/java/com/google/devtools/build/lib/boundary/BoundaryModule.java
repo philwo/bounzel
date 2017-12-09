@@ -55,7 +55,7 @@ public final class BoundaryModule extends BlazeModule {
       }
       String server = options.boundaryFrontend;
       try {
-        Digest digest = Digests.computeDigest(path);
+        Digest digest = Digests.computeDigest(path.getFileSystem().getDigestFunction(), path);
         return String.format(
             "bytestream://%s/%s",
             server,
